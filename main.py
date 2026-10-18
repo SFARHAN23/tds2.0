@@ -11,18 +11,39 @@ import jwt
 
 app = FastAPI(title="Unified Exam API", version="1.0.0")
 
-# Enable CORSMiddleware globally to satisfy all CORS & preflight checks automatically!
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Custom strict CORS handling via middleware or explicit check to avoid wildcard errors
+@app.middleware("http")
+async def cors_and_headers_middleware(request: Request, call_next):
+    start_time = time.time()
+    req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    request.state.request_id = req_id
+    
+    # Handle preflight OPTIONS
+    origin = request.headers.get("origin")
+    allowed_origins = ["https://dash-01y998.example.com", "https://app-lsujdw.example.com"]
+    
+    if request.method == "OPTIONS":
+        response = Response(status_code=200)
+        if origin in allowed_origins:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, PUT, DELETE"
+            response.headers["Access-Control-Allow-Headers"] = "*"
+        return response
+
+    response = await call_next(request)
+    
+    process_time = time.time() - start_time
+    response.headers["X-Request-ID"] = req_id
+    response.headers["X-Process-Time"] = f"{process_time:.6f}"
+    
+    if origin in allowed_origins:
+        response.headers["Access-Control-Allow-Origin"] = origin
+    
+    return response
 
 EMAIL = "24f2001684@ds.study.iitm.ac.in"
 
-ORDERS_DB = [{"id": i, "total": 100.0 + i} for i in range(1, 43)]
+ORDERS_DB = [{"id": i, "total": 100.0 + i} for i in range(1, 43)] # Exactly 42 orders (1 to 42)
 IDEMPOTENCY_STORE = {}
 RATE_LIMIT_STORE = {}
 LOGS_STORE = []
@@ -37,27 +58,11 @@ def add_log(path: str, req_id: str, level: str = "INFO"):
     if len(LOGS_STORE) > 100:
         LOGS_STORE.pop(0)
 
-@app.middleware("http")
-async def add_common_headers(request: Request, call_next):
-    start_time = time.time()
-    req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-    request.state.request_id = req_id
-    
-    response = await call_next(request)
-    
-    process_time = time.time() - start_time
-    response.headers["X-Request-ID"] = req_id
-    response.headers["X-Process-Time"] = f"{process_time:.6f}"
-    
-    add_log(request.url.path, req_id)
-    return response
-
 # ==========================================
 # TASK 3: CORS-Aware Metrics API
 # ==========================================
 @app.get("/stats")
 async def get_stats(request: Request, values: str = Query(...)):
-    origin = request.headers.get("origin", "https://dash-01y998.example.com")
     try:
         nums = [float(x.strip()) for x in values.split(",") if x.strip()]
     except Exception:
@@ -203,9 +208,10 @@ async def analytics(request: Request, x_api_key: str = Header(None, alias="X-API
 # TASK 8: Production Observability
 # ==========================================
 @app.get("/work")
-async def work(n: int = 1):
+async def work(request: Request, n: int = 1):
     global REQUEST_COUNTER
     REQUEST_COUNTER += 1
+    add_log("/work", request.state.request_id)
     return {"email": EMAIL, "done": n}
 
 @app.get("/metrics")
