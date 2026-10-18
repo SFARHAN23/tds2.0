@@ -5,6 +5,7 @@ import os
 import json
 from datetime import datetime
 from fastapi import FastAPI, Request, Response, Header, HTTPException, Query, Body
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import jwt
 
@@ -23,6 +24,7 @@ async def cors_and_headers_middleware(request: Request, call_next):
     
     origin = request.headers.get("origin", "")
     
+    # Handle preflight OPTIONS instantly with correct CORS headers and X-Request-ID
     if request.method == "OPTIONS":
         response = Response(status_code=200)
         if origin in ALLOWED_ORIGINS:
@@ -30,38 +32,50 @@ async def cors_and_headers_middleware(request: Request, call_next):
             response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, PUT, DELETE, PATCH"
             response.headers["Access-Control-Allow-Headers"] = "*"
             response.headers["Access-Control-Allow-Credentials"] = "true"
+        else:
+            response.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGINS[0]
         response.headers["X-Request-ID"] = req_id
         return response
 
     try:
         response = await call_next(request)
     except HTTPException as exc:
-        response = Response(
-            content=json.dumps({"detail": exc.detail}),
-            status_code=exc.status_code,
-            media_type="application/json"
-        )
+        content = {"detail": exc.detail}
+        headers = {"X-Request-ID": req_id}
         if exc.status_code == 429:
-            response.headers["Retry-After"] = "10"
-        response.headers["X-Request-ID"] = req_id
+            headers["Retry-After"] = "10"
         if origin in ALLOWED_ORIGINS:
-            response.headers["Access-Control-Allow-Origin"] = origin
-        return response
+            headers["Access-Control-Allow-Origin"] = origin
+        else:
+            headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGINS[0]
+        headers["Access-Control-Allow-Credentials"] = "true"
+        return JSONResponse(content=content, status_code=exc.status_code, headers=headers)
     except Exception as exc:
-        raise exc
+        content = {"detail": str(exc)}
+        headers = {"X-Request-ID": req_id}
+        if origin in ALLOWED_ORIGINS:
+            headers["Access-Control-Allow-Origin"] = origin
+        else:
+            headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGINS[0]
+        headers["Access-Control-Allow-Credentials"] = "true"
+        return JSONResponse(content=content, status_code=500, headers=headers)
 
     process_time = time.time() - start_time
     response.headers["X-Request-ID"] = req_id
     response.headers["X-Process-Time"] = f"{process_time:.6f}"
     
+    # Attach strict CORS headers to all normal responses
     if origin in ALLOWED_ORIGINS:
         response.headers["Access-Control-Allow-Origin"] = origin
-        response.headers["Access-Control-Allow-Credentials"] = "true"
+    else:
+        response.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGINS[0]
+    response.headers["Access-Control-Allow-Credentials"] = "true"
 
     return response
 
 EMAIL = "24f2001684@ds.study.iitm.ac.in"
 
+# Exactly 42 orders for pagination scan
 ORDERS_DB = [{"id": i, "total": 100.0 + i} for i in range(1, 43)]
 IDEMPOTENCY_STORE = {}
 RATE_LIMIT_STORE = {}
@@ -153,8 +167,12 @@ EXPECTED_API_KEY = "ak_9hzfwiby665st8htlaimkybb"
 async def analytics(request: Request, x_api_key: str = Header(None, alias="X-API-Key")):
     if x_api_key != EXPECTED_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API Key")
-    body = await request.json()
-    events = body.get("events", [])
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    events = body.get("events", []) if isinstance(body, dict) else []
+    
     users_positive = {}
     unique_users_set = set()
     revenue = 0.0
@@ -189,7 +207,7 @@ async def logs_tail(limit: int = 10):
 async def extract_invoice(request: Request):
     try:
         body = await request.json()
-        text = body.get("text", "")
+        text = body.get("text", "") if isinstance(body, dict) else ""
     except Exception:
         text = ""
     vendor_match = re.search(r"([A-Z][A-Za-z0-9\-]+ (?:Industries|Corp|Ltd|Inc|LLC))", text)
