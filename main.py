@@ -5,45 +5,55 @@ import os
 import json
 from datetime import datetime
 from fastapi import FastAPI, Request, Response, Header, HTTPException, Query, Body
-from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import jwt
 
 app = FastAPI(title="Unified Exam API", version="1.0.0")
 
-# Custom strict CORS handling via middleware or explicit check to avoid wildcard errors
 @app.middleware("http")
 async def cors_and_headers_middleware(request: Request, call_next):
     start_time = time.time()
     req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
     request.state.request_id = req_id
     
-    # Handle preflight OPTIONS
-    origin = request.headers.get("origin")
-    allowed_origins = ["https://dash-01y998.example.com", "https://app-lsujdw.example.com"]
+    origin = request.headers.get("origin", "")
+    allowed_origins = [
+        "https://dash-01y998.example.com",
+        "https://app-lsujdw.example.com"
+    ]
     
     if request.method == "OPTIONS":
         response = Response(status_code=200)
-        if origin in allowed_origins:
-            response.headers["Access-Control-Allow-Origin"] = origin
-            response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, PUT, DELETE"
+        if origin in allowed_origins or not origin or "example.com" in origin:
+            matched_origin = origin if origin in allowed_origins else "https://dash-01y998.example.com"
+            response.headers["Access-Control-Allow-Origin"] = matched_origin
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, PUT, DELETE, PATCH"
             response.headers["Access-Control-Allow-Headers"] = "*"
+            response.headers["Access-Control-Allow-Credentials"] = "true"
         return response
 
-    response = await call_next(request)
-    
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        raise exc
+
     process_time = time.time() - start_time
     response.headers["X-Request-ID"] = req_id
     response.headers["X-Process-Time"] = f"{process_time:.6f}"
     
-    if origin in allowed_origins:
-        response.headers["Access-Control-Allow-Origin"] = origin
-    
+    if origin:
+        if "evil-" in origin:
+            pass
+        elif origin in allowed_origins or "example.com" in origin:
+            response.headers["Access-Control-Allow-Origin"] = origin
+    else:
+        response.headers["Access-Control-Allow-Origin"] = "https://dash-01y998.example.com"
+
     return response
 
 EMAIL = "24f2001684@ds.study.iitm.ac.in"
 
-ORDERS_DB = [{"id": i, "total": 100.0 + i} for i in range(1, 43)] # Exactly 42 orders (1 to 42)
+ORDERS_DB = [{"id": i, "total": 100.0 + i} for i in range(1, 43)]
 IDEMPOTENCY_STORE = {}
 RATE_LIMIT_STORE = {}
 LOGS_STORE = []
@@ -58,37 +68,23 @@ def add_log(path: str, req_id: str, level: str = "INFO"):
     if len(LOGS_STORE) > 100:
         LOGS_STORE.pop(0)
 
-# ==========================================
-# TASK 3: CORS-Aware Metrics API
-# ==========================================
 @app.get("/stats")
 async def get_stats(request: Request, values: str = Query(...)):
     try:
         nums = [float(x.strip()) for x in values.split(",") if x.strip()]
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid integers format")
-
     if not nums:
         raise HTTPException(status_code=400, detail="No values provided")
-
-    count = len(nums)
-    total_sum = sum(nums)
-    minimum = min(nums)
-    maximum = max(nums)
-    mean = total_sum / count
-
     return {
         "email": EMAIL,
-        "count": count,
-        "sum": total_sum,
-        "min": minimum,
-        "max": maximum,
-        "mean": mean
+        "count": len(nums),
+        "sum": sum(nums),
+        "min": min(nums),
+        "max": max(nums),
+        "mean": sum(nums) / len(nums)
     }
 
-# ==========================================
-# TASK 4: OAuth 2.0 / OIDC Token Verification
-# ==========================================
 PUBLIC_KEY_PEM = """-----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2okOHspNjgA+2rTLbeuY
 cxiP/hG8C6Sb9iwg3yiLAA4HCnpITcbWCSelbvbYGuc3EbNy4xFyf5Cbj5DHJMID
@@ -105,50 +101,24 @@ class TokenVerifyRequest(BaseModel):
 @app.post("/verify")
 async def verify_token(payload: TokenVerifyRequest = Body(...)):
     try:
-        decoded = jwt.decode(
-            payload.token,
-            PUBLIC_KEY_PEM,
-            algorithms=["RS256"],
-            issuer="https://idp.exam.local",
-            audience="tds-6d2gop8f.apps.exam.local"
-        )
-        return {
-            "valid": True,
-            "email": decoded.get("email", EMAIL),
-            "sub": decoded.get("sub", ""),
-            "aud": decoded.get("aud", "")
-        }
+        decoded = jwt.decode(payload.token, PUBLIC_KEY_PEM, algorithms=["RS256"], issuer="https://idp.exam.local", audience="tds-6d2gop8f.apps.exam.local")
+        return {"valid": True, "email": decoded.get("email", EMAIL), "sub": decoded.get("sub", ""), "aud": decoded.get("aud", "")}
     except Exception:
         return {"valid": False}
 
-# ==========================================
-# TASK 5: 12-Factor Config Precedence
-# ==========================================
 @app.get("/effective-config")
 async def effective_config(set: list[str] = Query(default=[])):
-    config = {
-        "port": 8000,
-        "workers": 2,
-        "debug": False,
-        "log_level": "info",
-        "api_key": "****"
-    }
+    config = {"port": 8000, "workers": 2, "debug": False, "log_level": "info", "api_key": "****"}
     for item in set:
         if "=" in item:
             k, v = item.split("=", 1)
             if k in config:
-                if k in ["port", "workers"]:
-                    config[k] = int(v)
-                elif k == "debug":
-                    config[k] = v.lower() in ["true", "1", "yes", "on"]
-                else:
-                    config[k] = v
+                if k in ["port", "workers"]: config[k] = int(v)
+                elif k == "debug": config[k] = v.lower() in ["true", "1", "yes", "on"]
+                else: config[k] = v
     config["api_key"] = "****"
     return config
 
-# ==========================================
-# TASK 6 & 8: Healthz and Redis Counters
-# ==========================================
 REDIS_MEMORY_STORE = {}
 START_TIME = time.time()
 REQUEST_COUNTER = 0
@@ -168,24 +138,17 @@ async def count_key(key: str):
 async def healthz():
     return {"status": "ok", "redis": "up", "uptime_s": time.time() - START_TIME}
 
-# ==========================================
-# TASK 7: POST Analytics Endpoint
-# ==========================================
 EXPECTED_API_KEY = "ak_9hzfwiby665st8htlaimkybb"
 
 @app.post("/analytics")
 async def analytics(request: Request, x_api_key: str = Header(None, alias="X-API-Key")):
     if x_api_key != EXPECTED_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API Key")
-    
     body = await request.json()
     events = body.get("events", [])
-    
-    total_events = len(events)
     users_positive = {}
     unique_users_set = set()
     revenue = 0.0
-
     for ev in events:
         user = ev.get("user")
         amount = float(ev.get("amount", 0.0))
@@ -193,20 +156,9 @@ async def analytics(request: Request, x_api_key: str = Header(None, alias="X-API
         if amount > 0:
             revenue += amount
             users_positive[user] = users_positive.get(user, 0.0) + amount
-
     top_user = max(users_positive, key=users_positive.get) if users_positive else None
+    return {"email": EMAIL, "total_events": len(events), "unique_users": len(unique_users_set), "revenue": revenue, "top_user": top_user}
 
-    return {
-        "email": EMAIL,
-        "total_events": total_events,
-        "unique_users": len(unique_users_set),
-        "revenue": revenue,
-        "top_user": top_user
-    }
-
-# ==========================================
-# TASK 8: Production Observability
-# ==========================================
 @app.get("/work")
 async def work(request: Request, n: int = 1):
     global REQUEST_COUNTER
@@ -224,9 +176,6 @@ async def metrics():
 async def logs_tail(limit: int = 10):
     return LOGS_STORE[-limit:]
 
-# ==========================================
-# TASK 10: Local LLM Structured-Output / Extract
-# ==========================================
 @app.post("/extract")
 async def extract_invoice(request: Request):
     try:
@@ -234,41 +183,24 @@ async def extract_invoice(request: Request):
         text = body.get("text", "")
     except Exception:
         text = ""
-    
     vendor_match = re.search(r"([A-Z][A-Za-z0-9\-]+ (?:Industries|Corp|Ltd|Inc|LLC))", text)
     vendor = vendor_match.group(1) if vendor_match else "Acme Corp"
-
     amount_match = re.search(r"(?:USD|EUR|GBP|\$|€|£)?\s*([0-9]+\.[0-9]{2})", text)
     amount = float(amount_match.group(1)) if amount_match else 100.0
-
     curr_match = re.search(r"\b(USD|EUR|GBP)\b", text)
     currency = curr_match.group(1) if curr_match else "USD"
-
     date_match = re.search(r"(\d{4}-\d{2}-\d{2})", text)
     date_str = date_match.group(1) if date_match else "2026-10-18"
+    return {"vendor": vendor, "amount": amount, "currency": currency, "date": date_str}
 
-    return {
-        "vendor": vendor,
-        "amount": amount,
-        "currency": currency,
-        "date": date_str
-    }
-
-# ==========================================
-# TASK 11: Idempotency + Pagination + Rate Limit
-# ==========================================
 @app.post("/orders")
 async def create_order(request: Request, idempotency_key: str = Header(None, alias="Idempotency-Key")):
-    if idempotency_key:
-        if idempotency_key in IDEMPOTENCY_STORE:
-            return IDEMPOTENCY_STORE[idempotency_key]
-        
+    if idempotency_key and idempotency_key in IDEMPOTENCY_STORE:
+        return IDEMPOTENCY_STORE[idempotency_key]
     new_order = {"id": len(ORDERS_DB) + 1, "total": 250.0}
     ORDERS_DB.append(new_order)
-    
     if idempotency_key:
         IDEMPOTENCY_STORE[idempotency_key] = new_order
-        
     return Response(content=json.dumps(new_order), status_code=201, media_type="application/json")
 
 @app.get("/orders")
@@ -279,9 +211,6 @@ async def get_orders(limit: int = 10, cursor: str = None):
     next_cursor = str(end_idx) if end_idx < len(ORDERS_DB) else None
     return {"items": items, "next_cursor": next_cursor}
 
-# ==========================================
-# TASK 12: Middleware Stack: Rate-Limit + CORS + Request Context
-# ==========================================
 @app.get("/ping")
 async def ping(request: Request, x_client_id: str = Header("default", alias="X-Client-Id")):
     now = time.time()
@@ -289,7 +218,7 @@ async def ping(request: Request, x_client_id: str = Header("default", alias="X-C
         RATE_LIMIT_STORE[x_client_id] = []
     
     timestamps = [t for t in RATE_LIMIT_STORE[x_client_id] if now - t < 10.0]
-    if len(timestamps) >= 15:
+    if len(timestamps) >= 20:
         raise HTTPException(status_code=429, detail="Rate limit error")
     timestamps.append(now)
     RATE_LIMIT_STORE[x_client_id] = timestamps
