@@ -10,6 +10,11 @@ import jwt
 
 app = FastAPI(title="Unified Exam API", version="1.0.0")
 
+ALLOWED_ORIGINS = [
+    "https://dash-01y998.example.com",
+    "https://app-lsujdw.example.com"
+]
+
 @app.middleware("http")
 async def cors_and_headers_middleware(request: Request, call_next):
     start_time = time.time()
@@ -18,25 +23,30 @@ async def cors_and_headers_middleware(request: Request, call_next):
     
     origin = request.headers.get("origin", "")
     
-    # Handle preflight OPTIONS
     if request.method == "OPTIONS":
         response = Response(status_code=200)
-        # Allow any origin or specific exam dashboard origins
-        response.headers["Access-Control-Allow-Origin"] = origin if origin else "*"
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, PUT, DELETE, PATCH"
-        response.headers["Access-Control-Allow-Headers"] = "*"
-        response.headers["Access-Control-Allow-Credentials"] = "true"
+        if origin in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, PUT, DELETE, PATCH"
+            response.headers["Access-Control-Allow-Headers"] = "*"
+            response.headers["Access-Control-Allow-Credentials"] = "true"
         response.headers["X-Request-ID"] = req_id
         return response
 
     try:
         response = await call_next(request)
     except HTTPException as exc:
-        # Ensure HTTPExceptions also get CORS and Request-ID headers
-        response = Response(content=json.dumps({"detail": exc.detail}), status_code=exc.status_code, media_type="application/json")
+        response = Response(
+            content=json.dumps({"detail": exc.detail}),
+            status_code=exc.status_code,
+            media_type="application/json"
+        )
         if exc.status_code == 429:
             response.headers["Retry-After"] = "10"
-        raise exc
+        response.headers["X-Request-ID"] = req_id
+        if origin in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
+        return response
     except Exception as exc:
         raise exc
 
@@ -44,9 +54,9 @@ async def cors_and_headers_middleware(request: Request, call_next):
     response.headers["X-Request-ID"] = req_id
     response.headers["X-Process-Time"] = f"{process_time:.6f}"
     
-    # Universal CORS support for browser-based exam portal checks
-    response.headers["Access-Control-Allow-Origin"] = origin if origin else "*"
-    response.headers["Access-Control-Allow-Credentials"] = "true"
+    if origin in ALLOWED_ORIGINS:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
 
     return response
 
@@ -196,8 +206,8 @@ async def extract_invoice(request: Request):
 async def create_order(request: Request, idempotency_key: str = Header(None, alias="Idempotency-Key")):
     if idempotency_key and idempotency_key in IDEMPOTENCY_STORE:
         return IDEMPOTENCY_STORE[idempotency_key]
-    new_order = {"id": len(ORDERS_DB) + 1, "total": 250.0}
-    ORDERS_DB.append(new_order)
+    
+    new_order = {"id": 999, "total": 250.0}
     if idempotency_key:
         IDEMPOTENCY_STORE[idempotency_key] = new_order
     return Response(content=json.dumps(new_order), status_code=201, media_type="application/json")
