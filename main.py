@@ -24,7 +24,7 @@ async def cors_and_headers_middleware(request: Request, call_next):
     
     origin = request.headers.get("origin", "")
     
-    # Handle preflight OPTIONS instantly with correct CORS headers and X-Request-ID
+    # Handle preflight OPTIONS instantly
     if request.method == "OPTIONS":
         response = Response(status_code=200)
         if origin in ALLOWED_ORIGINS:
@@ -64,7 +64,6 @@ async def cors_and_headers_middleware(request: Request, call_next):
     response.headers["X-Request-ID"] = req_id
     response.headers["X-Process-Time"] = f"{process_time:.6f}"
     
-    # Attach strict CORS headers to all normal responses
     if origin in ALLOWED_ORIGINS:
         response.headers["Access-Control-Allow-Origin"] = origin
     else:
@@ -75,7 +74,6 @@ async def cors_and_headers_middleware(request: Request, call_next):
 
 EMAIL = "24f2001684@ds.study.iitm.ac.in"
 
-# Exactly 42 orders for pagination scan
 ORDERS_DB = [{"id": i, "total": 100.0 + i} for i in range(1, 43)]
 IDEMPOTENCY_STORE = {}
 RATE_LIMIT_STORE = {}
