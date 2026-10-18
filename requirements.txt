@@ -1,7 +1,6 @@
 fastapi==0.110.0
 uvicorn==0.28.0
 pydantic==2.6.4
-pydantic-core==2.16.3
 pyjwt==2.8.0
 cryptography==42.0.5
 redis==5.0.2

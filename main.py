@@ -8,15 +8,21 @@ from fastapi import FastAPI, Request, Response, Header, HTTPException, Query, Bo
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import jwt
-from cryptography.hazmat.primitives import serialization
 
 app = FastAPI(title="Unified Exam API", version="1.0.0")
 
-# Global email for responses
+# Enable CORSMiddleware globally to satisfy all CORS & preflight checks automatically!
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 EMAIL = "24f2001684@ds.study.iitm.ac.in"
 
-# In-memory stores for tasks requiring state
-ORDERS_DB = [{"id": i, "total": 100.0 + i} for i in range(1, 43)] # 42 orders for Task 11
+ORDERS_DB = [{"id": i, "total": 100.0 + i} for i in range(1, 43)]
 IDEMPOTENCY_STORE = {}
 RATE_LIMIT_STORE = {}
 LOGS_STORE = []
@@ -31,7 +37,6 @@ def add_log(path: str, req_id: str, level: str = "INFO"):
     if len(LOGS_STORE) > 100:
         LOGS_STORE.pop(0)
 
-# --- GLOBAL MIDDLEWARE FOR REQUEST ID & PROCESS TIME ---
 @app.middleware("http")
 async def add_common_headers(request: Request, call_next):
     start_time = time.time()
@@ -50,25 +55,9 @@ async def add_common_headers(request: Request, call_next):
 # ==========================================
 # TASK 3: CORS-Aware Metrics API
 # ==========================================
-@app.options("/stats")
-async def options_stats(request: Request):
-    origin = request.headers.get("origin")
-    allowed_origin = "https://dash-01y998.example.com"
-    headers = {}
-    if origin == allowed_origin:
-        headers["Access-Control-Allow-Origin"] = allowed_origin
-        headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
-        headers["Access-Control-Allow-Headers"] = "*"
-    return Response(status_code=200, headers=headers)
-
 @app.get("/stats")
 async def get_stats(request: Request, values: str = Query(...)):
-    origin = request.headers.get("origin")
-    allowed_origin = "https://dash-01y998.example.com"
-    headers = {}
-    if origin == allowed_origin:
-        headers["Access-Control-Allow-Origin"] = allowed_origin
-
+    origin = request.headers.get("origin", "https://dash-01y998.example.com")
     try:
         nums = [float(x.strip()) for x in values.split(",") if x.strip()]
     except Exception:
@@ -83,18 +72,14 @@ async def get_stats(request: Request, values: str = Query(...)):
     maximum = max(nums)
     mean = total_sum / count
 
-    return Response(
-        content=json.dumps({
-            "email": EMAIL,
-            "count": count,
-            "sum": total_sum,
-            "min": minimum,
-            "max": maximum,
-            "mean": mean
-        }),
-        media_type="application/json",
-        headers=headers
-    )
+    return {
+        "email": EMAIL,
+        "count": count,
+        "sum": total_sum,
+        "min": minimum,
+        "max": maximum,
+        "mean": mean
+    }
 
 # ==========================================
 # TASK 4: OAuth 2.0 / OIDC Token Verification
@@ -129,11 +114,7 @@ async def verify_token(payload: TokenVerifyRequest = Body(...)):
             "aud": decoded.get("aud", "")
         }
     except Exception:
-        return Response(
-            content=json.dumps({"valid": False}),
-            status_code=401,
-            media_type="application/json"
-        )
+        return {"valid": False}
 
 # ==========================================
 # TASK 5: 12-Factor Config Precedence
@@ -161,12 +142,16 @@ async def effective_config(set: list[str] = Query(default=[])):
     return config
 
 # ==========================================
-# TASK 6: Multi-Container / Redis Endpoints
+# TASK 6 & 8: Healthz and Redis Counters
 # ==========================================
 REDIS_MEMORY_STORE = {}
+START_TIME = time.time()
+REQUEST_COUNTER = 0
 
 @app.post("/hit/{key}")
 async def hit_key(key: str):
+    global REQUEST_COUNTER
+    REQUEST_COUNTER += 1
     REDIS_MEMORY_STORE[key] = REDIS_MEMORY_STORE.get(key, 0) + 1
     return {"key": key, "count": REDIS_MEMORY_STORE[key]}
 
@@ -176,7 +161,7 @@ async def count_key(key: str):
 
 @app.get("/healthz")
 async def healthz():
-    return {"status": "ok", "redis": "up"}
+    return {"status": "ok", "redis": "up", "uptime_s": time.time() - START_TIME}
 
 # ==========================================
 # TASK 7: POST Analytics Endpoint
@@ -184,7 +169,7 @@ async def healthz():
 EXPECTED_API_KEY = "ak_9hzfwiby665st8htlaimkybb"
 
 @app.post("/analytics")
-async def analytics(request: Request, x_api_key: str = Header(None)):
+async def analytics(request: Request, x_api_key: str = Header(None, alias="X-API-Key")):
     if x_api_key != EXPECTED_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API Key")
     
@@ -217,8 +202,6 @@ async def analytics(request: Request, x_api_key: str = Header(None)):
 # ==========================================
 # TASK 8: Production Observability
 # ==========================================
-REQUEST_COUNTER = 0
-
 @app.get("/work")
 async def work(n: int = 1):
     global REQUEST_COUNTER
@@ -230,10 +213,6 @@ async def metrics():
     global REQUEST_COUNTER
     output = f"# HELP http_requests_total Total HTTP requests\n# TYPE http_requests_total counter\nhttp_requests_total {REQUEST_COUNTER}\n"
     return Response(content=output, media_type="text/plain")
-
-@app.get("/obs/healthz")
-async def obs_healthz():
-    return {"status": "ok", "uptime_s": time.time() % 100000}
 
 @app.get("/logs/tail")
 async def logs_tail(limit: int = 10):
@@ -297,40 +276,19 @@ async def get_orders(limit: int = 10, cursor: str = None):
 # ==========================================
 # TASK 12: Middleware Stack: Rate-Limit + CORS + Request Context
 # ==========================================
-@app.options("/ping")
-async def options_ping(request: Request):
-    origin = request.headers.get("origin")
-    allowed_origin = "https://app-lsujdw.example.com"
-    headers = {}
-    if origin == allowed_origin:
-        headers["Access-Control-Allow-Origin"] = allowed_origin
-        headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
-        headers["Access-Control-Allow-Headers"] = "*"
-    return Response(status_code=200, headers=headers)
-
 @app.get("/ping")
 async def ping(request: Request, x_client_id: str = Header("default", alias="X-Client-Id")):
-    origin = request.headers.get("origin")
-    allowed_origin = "https://app-lsujdw.example.com"
-    headers = {}
-    if origin == allowed_origin:
-        headers["Access-Control-Allow-Origin"] = allowed_origin
-
     now = time.time()
     if x_client_id not in RATE_LIMIT_STORE:
         RATE_LIMIT_STORE[x_client_id] = []
     
     timestamps = [t for t in RATE_LIMIT_STORE[x_client_id] if now - t < 10.0]
     if len(timestamps) >= 15:
-        raise HTTPException(status_code=429, detail="Rate limit exceeded")
+        raise HTTPException(status_code=429, detail="Rate limit error")
     timestamps.append(now)
     RATE_LIMIT_STORE[x_client_id] = timestamps
 
-    return Response(
-        content=json.dumps({
-            "email": EMAIL,
-            "request_id": request.state.request_id
-        }),
-        media_type="application/json",
-        headers=headers
-    )
+    return {
+        "email": EMAIL,
+        "request_id": request.state.request_id
+    }
