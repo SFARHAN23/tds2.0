@@ -17,23 +17,26 @@ async def cors_and_headers_middleware(request: Request, call_next):
     request.state.request_id = req_id
     
     origin = request.headers.get("origin", "")
-    allowed_origins = [
-        "https://dash-01y998.example.com",
-        "https://app-lsujdw.example.com"
-    ]
     
+    # Handle preflight OPTIONS
     if request.method == "OPTIONS":
         response = Response(status_code=200)
-        if origin in allowed_origins or not origin or "example.com" in origin:
-            matched_origin = origin if origin in allowed_origins else "https://dash-01y998.example.com"
-            response.headers["Access-Control-Allow-Origin"] = matched_origin
-            response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, PUT, DELETE, PATCH"
-            response.headers["Access-Control-Allow-Headers"] = "*"
-            response.headers["Access-Control-Allow-Credentials"] = "true"
+        # Allow any origin or specific exam dashboard origins
+        response.headers["Access-Control-Allow-Origin"] = origin if origin else "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, PUT, DELETE, PATCH"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["X-Request-ID"] = req_id
         return response
 
     try:
         response = await call_next(request)
+    except HTTPException as exc:
+        # Ensure HTTPExceptions also get CORS and Request-ID headers
+        response = Response(content=json.dumps({"detail": exc.detail}), status_code=exc.status_code, media_type="application/json")
+        if exc.status_code == 429:
+            response.headers["Retry-After"] = "10"
+        raise exc
     except Exception as exc:
         raise exc
 
@@ -41,13 +44,9 @@ async def cors_and_headers_middleware(request: Request, call_next):
     response.headers["X-Request-ID"] = req_id
     response.headers["X-Process-Time"] = f"{process_time:.6f}"
     
-    if origin:
-        if "evil-" in origin:
-            pass
-        elif origin in allowed_origins or "example.com" in origin:
-            response.headers["Access-Control-Allow-Origin"] = origin
-    else:
-        response.headers["Access-Control-Allow-Origin"] = "https://dash-01y998.example.com"
+    # Universal CORS support for browser-based exam portal checks
+    response.headers["Access-Control-Allow-Origin"] = origin if origin else "*"
+    response.headers["Access-Control-Allow-Credentials"] = "true"
 
     return response
 
@@ -219,7 +218,7 @@ async def ping(request: Request, x_client_id: str = Header("default", alias="X-C
     
     timestamps = [t for t in RATE_LIMIT_STORE[x_client_id] if now - t < 10.0]
     if len(timestamps) >= 20:
-        raise HTTPException(status_code=429, detail="Rate limit error")
+        raise HTTPException(status_code=429, detail="Rate limit exceeded", headers={"Retry-After": "10"})
     timestamps.append(now)
     RATE_LIMIT_STORE[x_client_id] = timestamps
 
